@@ -24,30 +24,30 @@ namespace Turbo.Plugins.GuiSquare
             Hud.RunOnPlugin<GreaterRiftBossTimerPlugin>(plugin =>
             {
                 // ---------------------------------------------------------------
-                // 1) Where the two lines sit
+                // 1) Where the block sits
                 // ---------------------------------------------------------------
                 // BelowMinimapText -> minimap top-left corner, PanelLineCount lines down
                 // Custom           -> free placement through CustomX / CustomY
                 plugin.Anchor = GrBossTimerAnchor.BelowMinimapText;
 
                 // How far below the minimap's top edge the block starts, counted in text
-                // lines. THIS is the value to adjust if the two lines overlap the text
-                // above them or float too low: count the lines already drawn over the
+                // lines. THIS is the value to adjust if the block overlaps the text
+                // above it or floats too low: count the lines already drawn over the
                 // minimap and land right under the last one.
                 //
                 // The line height is measured live, including the 13.5px floor of that
                 // text, so the block keeps its place when the game window is resized.
                 plugin.PanelLineCount = 8;
 
-                // Whatever sits below these two lines has to move down by two lines to
-                // make room. The follower status icon already does, through:
-                //   Hud.RunOnPlugin<FollowerAliveStatusPlugin>(p => p.RbhPanelLineCount = 10);
+                // Whatever sits below these three lines has to move down by three lines
+                // to make room. The follower status icon already does, through:
+                //   Hud.RunOnPlugin<FollowerAliveStatusPlugin>(p => p.RbhPanelLineCount = 11);
 
                 // Fine tuning, as a ratio of the screen height.
                 // plugin.OffsetX = 0.000f;
                 // plugin.OffsetY = 0.000f;
 
-                // Extra air between the two lines, as a fraction of a line height.
+                // Extra air between lines, as a fraction of a line height.
                 // plugin.LineSpacing = 0.0f;
 
                 // Fully free placement:
@@ -56,17 +56,25 @@ namespace Turbo.Plugins.GuiSquare
                 // plugin.CustomY = 0.30f;
 
                 // ---------------------------------------------------------------
-                // 2) What the two lines say
+                // 2) What the three lines say
                 // ---------------------------------------------------------------
                 // plugin.CurrentLabel = "Bosskill: ";
                 // plugin.AverageLabel = "Bossavg: ";
+                // plugin.SessionLabel = "Session: ";
                 // plugin.IdlePlaceholder = "-";
 
                 // " x12" behind the average: how many kills it is built on.
                 // plugin.ShowSampleCount = true;
 
-                // " (best 8.4s / worst 41.2s)" behind the average. Off by default: it
-                // makes the second line much wider than the text above it.
+                // Third line, the fastest and slowest kill of the session, as
+                //   Session: best 8.4s // worst 41.2s
+                // On by default. The kill count and the average are left off
+                // it, since the line above already carries both.
+                // plugin.ShowSessionLine = true;
+
+                // The alternative to the third line: the same two numbers crammed onto
+                // the average line, as " (best 8.4s / worst 41.2s)". Off by default, and
+                // pointless to turn on while ShowSessionLine is on.
                 // plugin.ShowBestAndWorst = false;
 
                 // Put the guardian's name on the current line.
@@ -123,7 +131,7 @@ namespace Turbo.Plugins.GuiSquare
                 // 5) Diagnostics
                 // ---------------------------------------------------------------
                 // Names the exact state the tracker is in, the guardian it locked onto,
-                // and the numbers behind both lines. Turn it on once to validate in game.
+                // the numbers behind every line, and one entry per rift that has ended.
                 // plugin.DebugEnabled = true;
                 // plugin.DebugX = 0.35f;
                 // plugin.DebugY = 0.20f;
