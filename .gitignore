@@ -1,0 +1,14 @@
+# TurboHUD build artefacts, in case the repo is ever unpacked next to a HUD install
+plugins_compiled_*.dll
+logs/
+snapshots/
+
+# Local working notes, not part of the published plugin
+HANDOFF.md
+
+# Windows / editors
+Thumbs.db
+desktop.ini
+.vs/
+*.user
+*.suo

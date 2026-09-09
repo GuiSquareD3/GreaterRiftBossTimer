@@ -1,0 +1,133 @@
+// ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+// Example file: rename it to .cs to enable it.
+// It lets you tune GreaterRiftBossTimerPlugin without editing the plugin itself.
+//
+// NOTE: this HUD install disables every plugin its manager does not know about.
+// If you enable this file, ALSO add this line to Enable_Plugins in
+//   plugins/RosbotHelper/Config/Manager_Config.cs
+//   "Turbo.Plugins.GuiSquare.GreaterRiftBossTimerCustomizer"
+// ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+using Turbo.Plugins.Default;
+
+namespace Turbo.Plugins.GuiSquare
+{
+    public class GreaterRiftBossTimerCustomizer : BasePlugin, ICustomizer
+    {
+        public GreaterRiftBossTimerCustomizer()
+        {
+            Enabled = true;
+        }
+
+        public void Customize()
+        {
+            Hud.RunOnPlugin<GreaterRiftBossTimerPlugin>(plugin =>
+            {
+                // ---------------------------------------------------------------
+                // 1) Where the two lines sit
+                // ---------------------------------------------------------------
+                // BelowMinimapText -> minimap top-left corner, PanelLineCount lines down
+                // Custom           -> free placement through CustomX / CustomY
+                plugin.Anchor = GrBossTimerAnchor.BelowMinimapText;
+
+                // How far below the minimap's top edge the block starts, counted in text
+                // lines. THIS is the value to adjust if the two lines overlap the text
+                // above them or float too low: count the lines already drawn over the
+                // minimap and land right under the last one.
+                //
+                // The line height is measured live, including the 13.5px floor of that
+                // text, so the block keeps its place when the game window is resized.
+                plugin.PanelLineCount = 8;
+
+                // Whatever sits below these two lines has to move down by two lines to
+                // make room. The follower status icon already does, through:
+                //   Hud.RunOnPlugin<FollowerAliveStatusPlugin>(p => p.RbhPanelLineCount = 10);
+
+                // Fine tuning, as a ratio of the screen height.
+                // plugin.OffsetX = 0.000f;
+                // plugin.OffsetY = 0.000f;
+
+                // Extra air between the two lines, as a fraction of a line height.
+                // plugin.LineSpacing = 0.0f;
+
+                // Fully free placement:
+                // plugin.Anchor = GrBossTimerAnchor.Custom;
+                // plugin.CustomX = 0.02f;
+                // plugin.CustomY = 0.30f;
+
+                // ---------------------------------------------------------------
+                // 2) What the two lines say
+                // ---------------------------------------------------------------
+                // plugin.CurrentLabel = "Bosskill: ";
+                // plugin.AverageLabel = "Bossavg: ";
+                // plugin.IdlePlaceholder = "-";
+
+                // " x12" behind the average: how many kills it is built on.
+                // plugin.ShowSampleCount = true;
+
+                // " (best 8.4s / worst 41.2s)" behind the average. Off by default: it
+                // makes the second line much wider than the text above it.
+                // plugin.ShowBestAndWorst = false;
+
+                // Put the guardian's name on the current line.
+                // plugin.ShowGuardianName = false;
+
+                // Draw nothing at all until the first guardian of the session is engaged.
+                // plugin.HideUntilFirstBoss = false;
+
+                // plugin.HideOnMapModes = true;
+                // plugin.HideInTown = false;
+
+                // ---------------------------------------------------------------
+                // 3) What exactly is being measured
+                // ---------------------------------------------------------------
+                // FirstDamage   -> the clock starts on the guardian's first point of
+                //                  damage, so the number is the kill itself     [default]
+                // GuardianSpawn -> the clock starts the moment the guardian appears, so
+                //                  the number also carries the walk over to it
+                // plugin.StartOn = GrBossTimerStart.FirstDamage;
+
+                // true  -> game ticks (60 per second), what the rift timer itself counts,
+                //          and the one measure a changed game speed cannot skew [default]
+                // false -> real elapsed time on the wall clock
+                // plugin.UseGameTime = true;
+
+                // Fraction of max health the guardian has to drop below before the fight
+                // counts as started.
+                // plugin.FirstDamageThreshold = 0.999d;
+
+                // Kills shorter than this are still shown, but left out of the average.
+                // 0 keeps every sample: a one-shot guardian in a low rift really does die
+                // in no time.
+                // plugin.MinimumValidMilliseconds = 0d;
+
+                // How long to wait, in real milliseconds, before ruling on a guardian
+                // that has dropped off the actor list. A kill is only counted if the rift
+                // has actually moved on to its reward step, so a hero respawning far from
+                // the fight never invents one.
+                // plugin.VanishGraceMs = 900;
+
+                // Wipe the session statistics on every new game. false keeps them for as
+                // long as TurboHUD runs.
+                // plugin.ResetStatsOnNewGame = false;
+
+                // ---------------------------------------------------------------
+                // 4) Look
+                // ---------------------------------------------------------------
+                // Both fonts match the tracker text above them: Arial 8.0 bold, no shadow.
+                // The running one is tinted while the fight is still on.
+                // plugin.TextFont    = Hud.Render.CreateFont("Arial", 8.0f, 255, 255, 255, 255, true, false, false);
+                // plugin.RunningFont = Hud.Render.CreateFont("Arial", 8.0f, 255, 255, 225, 130, true, false, false);
+
+                // ---------------------------------------------------------------
+                // 5) Diagnostics
+                // ---------------------------------------------------------------
+                // Names the exact state the tracker is in, the guardian it locked onto,
+                // and the numbers behind both lines. Turn it on once to validate in game.
+                // plugin.DebugEnabled = true;
+                // plugin.DebugX = 0.35f;
+                // plugin.DebugY = 0.20f;
+            });
+        }
+    }
+}
