@@ -67,8 +67,8 @@ costs nothing per frame. `AutoFontSize = false` turns it off.
 
 `Anchor = Custom` puts the block anywhere on screen, by ratio.
 
-**Anything already docked below that text has to move down by three lines.** If you also run the
-Follower Alive Status plugin, its `RbhPanelLineCount` goes from `8` to `11`.
+**Anything already docked below that text has to move down by three lines** to make room, through
+whatever setting places it.
 
 ## Install
 
@@ -76,8 +76,7 @@ Follower Alive Status plugin, its `RbhPanelLineCount` goes from `8` to `11`.
    self-contained — no other files, no textures.
 
 2. **If your HUD pack ships a plugin manager that disables everything it does not know about**, add
-   one line to its enable list. On the RosbotHelper pack that is `Enable_Plugins` in
-   `plugins/RosbotHelper/Config/Manager_Config.cs`:
+   one line to that manager's enable list:
 
    ```csharp
    "Turbo.Plugins.GuiSquare.GreaterRiftBossTimerPlugin"
@@ -104,7 +103,6 @@ editing the plugin itself. Managed packs must whitelist the customizer too:
 | `CurrentLabel` / `AverageLabel` / `SessionLabel` | `Bosskill: ` / `Bossavg: ` / `Session: ` | Line labels |
 | `ShowSampleCount` | `true` | ` x12` behind the average |
 | `ShowSessionLine` | `true` | The third line, `best 8.4s // worst 41.2s` |
-| `ShowBestAndWorst` | `false` | The same two numbers crammed onto the average line instead |
 | `ShowGuardianName` | `false` | Guardian's name on the current line |
 | `HideUntilFirstBoss` | `false` | Draw nothing until the first guardian is engaged |
 | `HideOnMapModes` / `HideInTown` | `true` / `false` | When to stay out of the way |

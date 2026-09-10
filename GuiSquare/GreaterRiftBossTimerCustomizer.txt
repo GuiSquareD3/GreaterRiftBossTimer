@@ -3,8 +3,7 @@
 // It lets you tune GreaterRiftBossTimerPlugin without editing the plugin itself.
 //
 // NOTE: this HUD install disables every plugin its manager does not know about.
-// If you enable this file, ALSO add this line to Enable_Plugins in
-//   plugins/RosbotHelper/Config/Manager_Config.cs
+// If you enable this file, ALSO add it to that manager's enable list:
 //   "Turbo.Plugins.GuiSquare.GreaterRiftBossTimerCustomizer"
 // ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
@@ -40,8 +39,7 @@ namespace Turbo.Plugins.GuiSquare
                 plugin.PanelLineCount = 8;
 
                 // Whatever sits below these three lines has to move down by three lines
-                // to make room. The follower status icon already does, through:
-                //   Hud.RunOnPlugin<FollowerAliveStatusPlugin>(p => p.RbhPanelLineCount = 11);
+                // to make room, through whatever setting places it.
 
                 // Fine tuning, as a ratio of the screen height.
                 // plugin.OffsetX = 0.000f;

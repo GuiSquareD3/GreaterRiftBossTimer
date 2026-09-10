@@ -107,14 +107,7 @@ namespace Turbo.Plugins.GuiSquare
         /// <summary>Append the sample count to the average, as " x12".</summary>
         public bool ShowSampleCount { get; set; }
 
-        /// <summary>Append the best and worst kill of the session, as " (best 8.4s / worst 41.2s)".</summary>
-        public bool ShowBestAndWorst { get; set; }
-
-        /// <summary>
-        /// Draw a third line with the fastest and slowest kill of the session. The
-        /// alternative to ShowBestAndWorst above, which crams the same two numbers onto
-        /// the average line instead.
-        /// </summary>
+        /// <summary>Draw a third line with the fastest and slowest kill of the session.</summary>
         public bool ShowSessionLine { get; set; }
 
         /// <summary>Label of the session best-and-worst line.</summary>
@@ -235,8 +228,7 @@ namespace Turbo.Plugins.GuiSquare
         // Guardian being tracked in the current rift.
         private uint _guardianAcd;
         private string _guardianName;
-        private int _spawnTick;
-        private DateTime _spawnUtc;
+        private int _spawnTick;         // first sighting; diagnostics only, never an anchor
         private int _engageTick;         // int.MinValue while the fight has not started
         private DateTime _engageUtc;
         private int _fullHealthTick;     // last moment the guardian was seen untouched
@@ -312,7 +304,6 @@ namespace Turbo.Plugins.GuiSquare
             AverageLabel = "Bossavg: ";
             IdlePlaceholder = "-";
             ShowSampleCount = true;
-            ShowBestAndWorst = false;
             ShowSessionLine = true;
             SessionLabel = "Session: ";
             ShowGuardianName = false;
@@ -500,7 +491,6 @@ namespace Turbo.Plugins.GuiSquare
                 _guardianAcd = guardian.AcdId;
                 _guardianName = guardian.SnoMonster != null ? guardian.SnoMonster.NameEnglish : guardian.SnoActor.Code;
                 _spawnTick = tick;
-                _spawnUtc = now;
                 _engageTick = int.MinValue;
                 _fullHealthTick = 0;
                 _fullHealthUtc = DateTime.MinValue;
@@ -716,7 +706,11 @@ namespace Turbo.Plugins.GuiSquare
 
             int startTick;
             DateTime startUtc;
-            GetStartPoint(out startTick, out startUtc);
+            if (!TryGetStartPoint(out startTick, out startUtc))
+            {
+                _killPath = path + ", no anchor";
+                return;
+            }
 
             var ms = UseGameTime
                 ? TicksToMilliseconds(startTick, endTick)
@@ -775,14 +769,15 @@ namespace Turbo.Plugins.GuiSquare
 
         /// <summary>
         /// Where the clock is counting from. The preferred anchor depends on StartOn, but
-        /// every mode falls back the same way, best first:
+        /// every mode falls back the same way: the moment the guardian became attackable,
+        /// then the moment the progress bar filled -- the latter being the only anchor
+        /// left for a guardian the actor list never showed at all.
         ///
-        ///   1. the moment the guardian became attackable;
-        ///   2. the moment the progress bar filled, which is when it spawned, for one the
-        ///      actor list only ever showed us dead or not at all;
-        ///   3. the first sighting, if the rift filling was somehow missed too.
+        /// false when there is no anchor whatsoever, which means nothing was ever
+        /// observed and there is nothing to measure. Returning a bogus zero instead
+        /// would quietly poison the average with a kill of no duration.
         /// </summary>
-        private void GetStartPoint(out int tick, out DateTime utc)
+        private bool TryGetStartPoint(out int tick, out DateTime utc)
         {
             switch (StartOn)
             {
@@ -791,13 +786,13 @@ namespace Turbo.Plugins.GuiSquare
                     {
                         tick = _engageTick;
                         utc = _engageUtc;
-                        return;
+                        return true;
                     }
                     if (_fullHealthUtc != DateTime.MinValue)
                     {
                         tick = _fullHealthTick;
                         utc = _fullHealthUtc;
-                        return;
+                        return true;
                     }
                     break;
 
@@ -808,7 +803,7 @@ namespace Turbo.Plugins.GuiSquare
                     {
                         tick = _riftFullTick;
                         utc = _riftFullUtc;
-                        return;
+                        return true;
                     }
                     break;
             }
@@ -817,17 +812,19 @@ namespace Turbo.Plugins.GuiSquare
             {
                 tick = _attackableTick;
                 utc = _attackableUtc;
+                return true;
             }
-            else if (_riftFullTick != 0)
+
+            if (_riftFullTick != 0)
             {
                 tick = _riftFullTick;
                 utc = _riftFullUtc;
+                return true;
             }
-            else
-            {
-                tick = _spawnTick;
-                utc = _spawnUtc;
-            }
+
+            tick = 0;
+            utc = DateTime.MinValue;
+            return false;
         }
 
         private static double TicksToMilliseconds(int fromTick, int toTick)
@@ -840,7 +837,6 @@ namespace Turbo.Plugins.GuiSquare
             _guardianAcd = 0u;
             _guardianName = null;
             _spawnTick = 0;
-            _spawnUtc = DateTime.MinValue;
             _engageTick = int.MinValue;
             _engageUtc = DateTime.MinValue;
             _fullHealthTick = 0;
@@ -980,11 +976,11 @@ namespace Turbo.Plugins.GuiSquare
         {
             double ms;
 
-            if (_running && !_killed)
+            int startTick;
+            DateTime startUtc;
+
+            if (_running && !_killed && TryGetStartPoint(out startTick, out startUtc))
             {
-                int startTick;
-                DateTime startUtc;
-                GetStartPoint(out startTick, out startUtc);
                 ms = UseGameTime
                     ? TicksToMilliseconds(startTick, Hud.Game.CurrentGameTick)
                     : (Hud.Time.Now - startUtc).TotalMilliseconds;
@@ -1030,12 +1026,6 @@ namespace Turbo.Plugins.GuiSquare
 
             if (ShowSampleCount)
                 text += " x" + KillCount.ToString(CultureInfo.InvariantCulture);
-
-            if (ShowBestAndWorst)
-            {
-                text += " (best " + FormatDuration(BestMilliseconds)
-                     + " / worst " + FormatDuration(WorstMilliseconds) + ")";
-            }
 
             return text;
         }
