@@ -19,9 +19,6 @@ Bossavg: 15.1s x23
 Session: best 8.4s // worst 41.2s
 ```
 
-The block sits under whatever tracker text is already drawn over your minimap, and keeps its place
-when you resize the game window.
-
 ## Install
 
 1. Copy the `GuiSquare` folder into your TurboHUD `plugins` directory. The plugin is
