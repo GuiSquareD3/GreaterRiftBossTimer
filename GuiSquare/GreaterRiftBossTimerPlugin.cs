@@ -318,9 +318,9 @@ namespace Turbo.Plugins.GuiSquare
             VanishGraceMs = 900;
             ResetStatsOnNewGame = false;
 
-            // On while the miss is still being chased: the panel logs one line per rift,
-            // so a rift that counts nothing says which check gave up. Set it back to
-            // false once a long run has come back clean.
+            // Off. Turn it on to read the panel: it logs one line per rift, so a rift
+            // that counts nothing says which check gave up. That trace is what found
+            // the SpecialArea flip, after two wrong guesses at the cause.
             DebugEnabled = false;
             DebugX = 0.35f;
             DebugY = 0.20f;

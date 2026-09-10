@@ -112,7 +112,7 @@ editing the plugin itself. Managed packs must whitelist the customizer too:
 | `MinimumValidMilliseconds` | `0` | Kills below this are shown but left out of the average |
 | `VanishGraceMs` | `900` | Wait before ruling on a guardian that left the actor list |
 | `ResetStatsOnNewGame` | `false` | Session total, or per game |
-| `DebugEnabled` | `true` | On-screen diagnostic panel. On by default while the plugin is still being validated |
+| `DebugEnabled` | `false` | On-screen diagnostic panel, one line per rift (see below) |
 
 Set `AutoFontSize = false` to hand the fonts back to yourself: `TextFont`, and `RunningFont` for
 the current line while the fight is still on.
@@ -184,9 +184,12 @@ registered.
 ### Diagnostic panel
 
 Setting `DebugEnabled = true` prints the raw state on screen — which condition the tracker is
-sitting on, the guardian it locked onto with its health, the special area, rift percentage and
-reward step, the clock in use, the numbers behind every line, and one entry per rift that has
-ended -- which is what turns "one rift counted nothing" from a guess into a reading.
+sitting on, the guardian it locked onto with its health and its attackability flags, the special
+area, rift percentage and reward step, the clock and anchors in use, the numbers behind every
+line, and one entry per rift that has ended.
+
+That last list is what turns "one rift counted nothing" from a guess into a reading. It is how the
+`SpecialArea` flip above was found, after two plausible but wrong guesses at the cause.
 
 ## Requirements
 
