@@ -8,8 +8,8 @@ those.
 
 ## What it does
 
-- **Line 1 — current rift.** Ticks live from the guardian's first point of damage, freezes on the
-  final value the moment it dies, and stays on screen until the next Greater Rift starts.
+- **Line 1 — current rift.** Ticks live from the moment the guardian becomes attackable,
+  freezes on the final value when it dies, and stays on screen until the next Greater Rift starts.
 - **Line 2 — session average.** The mean of every counted kill, with the sample count behind it.
 - **Line 3 — session range.** The fastest and slowest of those kills.
 
@@ -50,6 +50,21 @@ text drawn over the minimap is sized to fit the minimap width but stops shrinkin
 an absolute floor, so it takes a larger share of the minimap on a small window than on a large one.
 A fixed fraction drifts into it as soon as the window changes size.
 
+### The font follows the window too
+
+The block **re-derives its own font size the way the tracker text derives its own**, so the two
+match at any resolution.
+
+That text is not drawn at a fixed size. It grows until it fills the minimap width, and stops early
+only once a line reaches `MinLineHeight` pixels **and** the size reaches `MaxFontSize`. Both halves
+of that cap matter: TurboHUD font sizes scale with the window, so at 800x600 a size of `MaxFontSize`
+gives lines well under the floor, the cap is never met, and the text keeps growing past
+`MaxFontSize` until it is. Drawing at a fixed `MaxFontSize` therefore looks right at 1080p and
+visibly too small at 800x600.
+
+The search is re-run from scratch on a resize and incrementally when the text changes length, so it
+costs nothing per frame. `AutoFontSize = false` turns it off.
+
 `Anchor = Custom` puts the block anywhere on screen, by ratio.
 
 **Anything already docked below that text has to move down by three lines.** If you also run the
@@ -82,6 +97,8 @@ editing the plugin itself. Managed packs must whitelist the customizer too:
 | `Anchor` | `BelowMinimapText` | `BelowMinimapText` or `Custom` |
 | `PanelLineCount` | `8` | Drop below the minimap top edge, in text lines. Resize-proof |
 | `MinLineHeight` | `13.5` | Absolute floor of one of those lines, in pixels |
+| `AutoFontSize` | `true` | Re-derive the font size from the window, the way the tracker text does |
+| `MaxFontSize` | `8.0` | Size the auto-sizing stops at, once lines clear the floor |
 | `OffsetX` / `OffsetY` | `0` / `0` | Fine tuning, as a ratio of screen height |
 | `LineSpacing` | `0` | Extra air between lines, as a fraction of a line height |
 | `CurrentLabel` / `AverageLabel` / `SessionLabel` | `Bosskill: ` / `Bossavg: ` / `Session: ` | Line labels |
@@ -91,16 +108,16 @@ editing the plugin itself. Managed packs must whitelist the customizer too:
 | `ShowGuardianName` | `false` | Guardian's name on the current line |
 | `HideUntilFirstBoss` | `false` | Draw nothing until the first guardian is engaged |
 | `HideOnMapModes` / `HideInTown` | `true` / `false` | When to stay out of the way |
-| `StartOn` | `FirstDamage` | `FirstDamage` (the kill itself) or `GuardianSpawn` (kill plus the walk over) |
+| `StartOn` | `BecomesAttackable` | `BecomesAttackable`, `FirstDamage`, or `GuardianSpawn` |
 | `UseGameTime` | `true` | Game ticks, or the wall clock |
-| `FirstDamageThreshold` | `0.999` | Health fraction that starts the clock |
+| `FirstDamageThreshold` | `0.999` | Health fraction that counts as damaged |
 | `MinimumValidMilliseconds` | `0` | Kills below this are shown but left out of the average |
 | `VanishGraceMs` | `900` | Wait before ruling on a guardian that left the actor list |
 | `ResetStatsOnNewGame` | `false` | Session total, or per game |
 | `DebugEnabled` | `true` | On-screen diagnostic panel. On by default while the plugin is still being validated |
 
-Both fonts are plain TurboHUD fonts and can be replaced: `TextFont`, and `RunningFont` for the
-current line while the fight is still on.
+Set `AutoFontSize = false` to hand the fonts back to yourself: `TextFont`, and `RunningFont` for
+the current line while the fight is still on.
 
 ## How the detection works
 
@@ -122,13 +139,34 @@ The rift-completion condition on the second signal is the whole point of it: a h
 respawning far from the fight also makes the guardian drop off the actor list. Without that check
 it would invent a kill; with it, the run is dropped and no sample is recorded.
 
-Collections are not guaranteed once per frame, which is what makes the third signal necessary and
-also shapes how the fight is timed. The clock prefers the guardian's first point of damage, then
-the last moment it was seen at full health, then the moment the progress bar filled. That last
-anchor **slides forward** while the rift runs and stops on its own when the bar fills, rather than
-being latched the first time the bar is caught at 100% — a value that slides cannot be missed
-between two collections. In a Greater Rift the guardian spawns where the bar filled, right next to
-the hero, so there is no walk to charge to the fight.
+### When the clock starts
+
+On the moment the guardian **becomes attackable**, not on its spawn and not on the first hit.
+
+A rift guardian spends its first moment on screen playing a spawn animation, untargetable and
+immune, and nothing anyone does shortens it. Counting it would add the same constant to every
+sample and drown the differences the average exists to show. Starting on the first point of damage
+has the opposite flaw: it hides the time the hero spends closing in or setting up. `StartOn`
+switches to either of those if you want them.
+
+Attackability is read from `Untargetable`, `Invulnerable` and the `Spawn` animation state —
+deliberately not `IMonster.Attackable`, which also folds in `IsOnScreen` and would therefore answer
+"no" every time the camera loses the guardian mid-fight. **Damage taken overrides all three**: a
+guardian losing health is attackable whatever its flags claim, which keeps one whose flags never
+clear from reporting a fight of no duration.
+
+### Anchors, and why they slide
+
+Collections are not guaranteed once per frame, which is what makes the third kill signal necessary
+and also shapes every timestamp here. The clock prefers the moment the guardian became attackable,
+then the moment the progress bar filled.
+
+Both of those **slide forward** and stop on their own, rather than being latched on the transition
+— the attackable anchor advances while the guardian still cannot be hit, the rift anchor while the
+bar is still filling. Latching means catching one exact reading on one exact collection, which is
+the very thing that cannot be relied on here; a value that slides cannot be missed. In a Greater
+Rift the guardian spawns where the bar filled, right next to the hero, so neither anchor charges
+the fight for a walk.
 
 ### Being in a rift is sticky
 

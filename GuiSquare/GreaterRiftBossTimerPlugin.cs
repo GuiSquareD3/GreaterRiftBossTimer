@@ -28,8 +28,9 @@ namespace Turbo.Plugins.GuiSquare
 
     public enum GrBossTimerStart
     {
-        FirstDamage,    // the clock starts when the guardian first loses health
-        GuardianSpawn   // the clock starts the moment the guardian is first seen
+        BecomesAttackable, // the clock starts when the guardian can first be hit
+        FirstDamage,       // the clock starts when the guardian first loses health
+        GuardianSpawn      // the clock starts the moment the guardian spawns
     }
 
     public enum GrBossTimerAnchor
@@ -58,12 +59,26 @@ namespace Turbo.Plugins.GuiSquare
         public int PanelLineCount { get; set; }
 
         /// <summary>
-        /// Absolute floor for one line of the text drawn over the minimap, in pixels.
-        /// That text stops shrinking at this height however small the window gets, which
-        /// is why a plain fraction of the minimap height drifts and a measured line does
-        /// not.
+        /// Absolute floor, in pixels, for one line of the text drawn over the minimap.
+        /// That text refuses to be smaller than this however small the window gets, and
+        /// grows its font size past MaxFontSize to stay above it. Mirrors the same
+        /// literal in the tracker text's own sizing code.
         /// </summary>
         public float MinLineHeight { get; set; }
+
+        /// <summary>
+        /// Size the block's font the way the tracker text above it sizes itself, so the
+        /// two match at any window size. Set it to false to draw at whatever TextFont
+        /// and RunningFont were built with, and take full control of them.
+        /// </summary>
+        public bool AutoFontSize { get; set; }
+
+        /// <summary>
+        /// Size the auto-sizing stops at once lines are at least MinLineHeight pixels
+        /// tall. Mirrors the tracker text's own cap; below a certain window size that
+        /// cap cannot be met and both grow past it together.
+        /// </summary>
+        public float MaxFontSize { get; set; }
 
         /// <summary>Free placement, as a screen ratio (0..1). Only used when Anchor == Custom.</summary>
         public float CustomX { get; set; }
@@ -121,7 +136,15 @@ namespace Turbo.Plugins.GuiSquare
         // Measurement
         // ---------------------------------------------------------------------
 
-        /// <summary>Where the clock starts. Default: on the guardian's first point of damage.</summary>
+        /// <summary>
+        /// Where the clock starts. Default: the moment the guardian can first be hit.
+        ///
+        /// A rift guardian spends its first moment on screen playing a spawn animation,
+        /// untargetable and immune, and nothing anyone does shortens it. Counting it
+        /// would add a constant to every sample and drown the differences the average is
+        /// there to show. Starting on the first point of damage has the opposite flaw:
+        /// it hides the time the hero spends closing in or setting up.
+        /// </summary>
         public GrBossTimerStart StartOn { get; set; }
 
         /// <summary>
@@ -132,9 +155,12 @@ namespace Turbo.Plugins.GuiSquare
         public bool UseGameTime { get; set; }
 
         /// <summary>
-        /// Fraction of max health the guardian has to drop below before the fight counts
-        /// as started. Slightly under 1 so that a rounding wobble on a full health bar
-        /// does not start the clock on its own.
+        /// Fraction of max health the guardian has to drop below to count as damaged.
+        /// Slightly under 1 so that a rounding wobble on a full health bar does not
+        /// start the clock on its own.
+        ///
+        /// Used by StartOn = FirstDamage, and as the backstop of BecomesAttackable: a
+        /// guardian taking damage is attackable whatever its flags claim.
         /// </summary>
         public double FirstDamageThreshold { get; set; }
 
@@ -215,6 +241,9 @@ namespace Turbo.Plugins.GuiSquare
         private DateTime _engageUtc;
         private int _fullHealthTick;     // last moment the guardian was seen untouched
         private DateTime _fullHealthUtc;
+        private int _attackableTick;     // last moment the guardian could NOT be hit yet
+        private DateTime _attackableUtc;
+        private bool _attackableSeen;
         private int _lastSeenTick;
         private DateTime _lastSeenUtc;
         private double _maxHealth;
@@ -246,10 +275,22 @@ namespace Turbo.Plugins.GuiSquare
         private readonly List<string> _history = new List<string>();
         private int _riftsSeen;
 
-        private IFont _lineProbeFont;
+        // Auto-sizing, mirroring how the tracker text above sizes itself.
+        private const float FontSizeFloor = 1.0f;
+        private const float FontSizeCeiling = 40.0f;
+        private const float FontSizeStep = 0.1f;
+        private IFont _autoTextFont;
+        private IFont _autoRunningFont;
+        private IFont _probeFont;
+        private float _probeSize;
+        private float _fontSize;
+        private float _lastMinimapWidth;
+        private int _lastBlockLength = -1;
+
         private float _dbgLineHeight;
         private string _dbgState = "-";
         private string _dbgGuardian = "-";
+        private string _dbgAttackable = "-";
 
         public GreaterRiftBossTimerPlugin()
         {
@@ -259,6 +300,8 @@ namespace Turbo.Plugins.GuiSquare
             Anchor = GrBossTimerAnchor.BelowMinimapText;
             PanelLineCount = 8;      // tracker lines already drawn over the minimap
             MinLineHeight = 13.5f;   // absolute floor of one of those lines, in pixels
+            AutoFontSize = true;
+            MaxFontSize = 8.0f;      // the tracker text's own cap
             CustomX = 0.02f;
             CustomY = 0.30f;
             OffsetX = 0f;
@@ -277,7 +320,7 @@ namespace Turbo.Plugins.GuiSquare
             HideOnMapModes = true;
             HideInTown = false;
 
-            StartOn = GrBossTimerStart.FirstDamage;
+            StartOn = GrBossTimerStart.BecomesAttackable;
             UseGameTime = true;
             FirstDamageThreshold = 0.999d;
             MinimumValidMilliseconds = 0d;
@@ -299,15 +342,11 @@ namespace Turbo.Plugins.GuiSquare
         {
             base.Load(hud);
 
-            // Same family, size, weight and colour as the tracker text drawn over the
-            // minimap, so the block reads as a continuation of it.
-            TextFont = Hud.Render.CreateFont("Arial", 8.0f, 255, 255, 255, 255, true, false, false);
-            RunningFont = Hud.Render.CreateFont("Arial", 8.0f, 255, 255, 225, 130, true, false, false);
+            // Fall-backs, used as-is only when AutoFontSize is off. With it on -- the
+            // default -- the size is re-derived from the window, and these are replaced.
+            TextFont = Hud.Render.CreateFont("Arial", MaxFontSize, 255, 255, 255, 255, true, false, false);
+            RunningFont = Hud.Render.CreateFont("Arial", MaxFontSize, 255, 255, 225, 130, true, false, false);
             DebugFont = Hud.Render.CreateFont("consolas", 8.5f, 255, 255, 255, 160, false, false, 200, 0, 0, 0, true);
-
-            // Never drawn with. It only measures how tall one line of that tracker text
-            // is right now, which is what tells us how far down it reaches.
-            _lineProbeFont = Hud.Render.CreateFont("Arial", 8.0f, 255, 255, 255, 255, true, false, false);
         }
 
         // =====================================================================
@@ -465,33 +504,55 @@ namespace Turbo.Plugins.GuiSquare
                 _engageTick = int.MinValue;
                 _fullHealthTick = 0;
                 _fullHealthUtc = DateTime.MinValue;
+                // Seeded on this first sighting, so a guardian already attackable by the
+                // time it reaches the actor list still has an anchor.
+                _attackableTick = tick;
+                _attackableUtc = now;
+                _attackableSeen = false;
                 _maxHealth = 0d;
                 _seenAlive = false;
                 _currentMs = -1d;
-
-                if (StartOn == GrBossTimerStart.GuardianSpawn)
-                {
-                    // The rift filling is the guardian's real spawn. Falling back to this
-                    // first sighting would start the clock late on a guardian the actor
-                    // list only picked up once the fight was already under way.
-                    _engageTick = _riftFullTick != 0 ? _riftFullTick : tick;
-                    _engageUtc = _riftFullTick != 0 ? _riftFullUtc : now;
-                    _running = true;
-                }
             }
 
             if (_maxHealth <= 0d && guardian.MaxHealth > 0d)
                 _maxHealth = guardian.MaxHealth;
 
-            if (_engageTick == int.MinValue && _maxHealth > 0d && guardian.CurHealth > 0d)
+            var damaged = _maxHealth > 0d
+                && guardian.CurHealth > 0d
+                && guardian.CurHealth < _maxHealth * FirstDamageThreshold;
+
+            // When the guardian became hittable. It spends its first moment on screen
+            // playing a spawn animation that no damage can interrupt, so this, not the
+            // spawn and not the first hit, is when the fight really starts.
+            //
+            // Slides while it cannot be hit and stops on its own, for the same reason
+            // the rift anchor slides: a transition caught on one exact collection can be
+            // missed, a sliding value cannot.
+            if (!_attackableSeen)
             {
-                if (guardian.CurHealth < _maxHealth * FirstDamageThreshold)
+                if (IsAttackable(guardian) || damaged)
+                {
+                    // Damage only lands on something that can be hit, so it settles the
+                    // question whatever the flags say. That backstop matters: without
+                    // it, a guardian whose flags never clear would slide its own anchor
+                    // all the way to its death and report a fight of no duration.
+                    _attackableSeen = true;
+                }
+                else
+                {
+                    _attackableTick = tick;
+                    _attackableUtc = now;
+                }
+            }
+
+            if (_engageTick == int.MinValue)
+            {
+                if (damaged)
                 {
                     _engageTick = tick;
                     _engageUtc = now;
-                    _running = true;
                 }
-                else
+                else if (_maxHealth > 0d && guardian.CurHealth > 0d)
                 {
                     // Still untouched. Remembering when that was last true keeps a
                     // guardian that dies between two collections from being charged
@@ -502,6 +563,8 @@ namespace Turbo.Plugins.GuiSquare
                 }
             }
 
+            _running = !_killed && HasStarted();
+
             var dead = !guardian.IsAlive
                 || guardian.CurHealth <= 0d
                 || guardian.AnimationState == AcdAnimationState.Dead;
@@ -511,7 +574,9 @@ namespace Turbo.Plugins.GuiSquare
                 _seenAlive = true;
                 _lastSeenTick = tick;
                 _lastSeenUtc = now;
-                _dbgState = _running ? "fight in progress" : "guardian up, no damage yet";
+                _dbgState = _running
+                    ? "fight in progress"
+                    : "guardian up, waiting for it to become attackable";
             }
             else if (_seenAlive)
             {
@@ -532,11 +597,19 @@ namespace Turbo.Plugins.GuiSquare
                 + " hp=" + guardian.CurHealth.ToString("0", CultureInfo.InvariantCulture)
                 + "/" + _maxHealth.ToString("0", CultureInfo.InvariantCulture)
                 + " anim=" + guardian.AnimationState;
+
+            _dbgAttackable = "seen=" + _attackableSeen
+                + " now=" + IsAttackable(guardian)
+                + " -- untargetable=" + guardian.Untargetable
+                + " invulnerable=" + guardian.Invulnerable
+                + " damaged=" + damaged
+                + " (Attackable=" + guardian.Attackable + ")";
         }
 
         private void TrackMissingGuardian(DateTime now, bool rewardStep)
         {
             _dbgGuardian = "no guardian on the actor list";
+            _dbgAttackable = "-";
 
             if (_guardianAcd == 0u || _killed || !_seenAlive)
             {
@@ -664,26 +737,86 @@ namespace Turbo.Plugins.GuiSquare
         }
 
         /// <summary>
-        /// Where the clock is counting from, best anchor first:
+        /// Can the guardian be hit right now? A rift guardian spends its first moment on
+        /// screen playing a spawn animation, untargetable and immune, and the clock has
+        /// no business running during it.
         ///
-        ///   1. the first point of damage -- the fight itself;
-        ///   2. the last moment the guardian was seen at full health, for one killed
-        ///      between two collections so its health bar was never caught in between;
-        ///   3. the moment the progress bar filled, which is when the guardian spawned,
-        ///      for one the actor list only ever showed us dead or not at all;
-        ///   4. the first sighting, if the rift filling was somehow missed too.
+        /// Three independent flags rather than IMonster.Attackable, which also folds in
+        /// IsOnScreen and would therefore answer "no" every time the camera loses the
+        /// guardian mid-fight.
+        /// </summary>
+        private bool IsAttackable(IMonster guardian)
+        {
+            if (guardian.Untargetable)
+                return false;
+            if (guardian.Invulnerable)
+                return false;
+            if (guardian.AnimationState == AcdAnimationState.Spawn)
+                return false;
+
+            return true;
+        }
+
+        /// <summary>Has the clock started, under the currently selected StartOn?</summary>
+        private bool HasStarted()
+        {
+            switch (StartOn)
+            {
+                case GrBossTimerStart.FirstDamage:
+                    return _engageTick != int.MinValue;
+
+                case GrBossTimerStart.GuardianSpawn:
+                    return _guardianAcd != 0u || _riftFullTick != 0;
+
+                default:
+                    return _attackableSeen;
+            }
+        }
+
+        /// <summary>
+        /// Where the clock is counting from. The preferred anchor depends on StartOn, but
+        /// every mode falls back the same way, best first:
+        ///
+        ///   1. the moment the guardian became attackable;
+        ///   2. the moment the progress bar filled, which is when it spawned, for one the
+        ///      actor list only ever showed us dead or not at all;
+        ///   3. the first sighting, if the rift filling was somehow missed too.
         /// </summary>
         private void GetStartPoint(out int tick, out DateTime utc)
         {
-            if (_engageTick != int.MinValue)
+            switch (StartOn)
             {
-                tick = _engageTick;
-                utc = _engageUtc;
+                case GrBossTimerStart.FirstDamage:
+                    if (_engageTick != int.MinValue)
+                    {
+                        tick = _engageTick;
+                        utc = _engageUtc;
+                        return;
+                    }
+                    if (_fullHealthUtc != DateTime.MinValue)
+                    {
+                        tick = _fullHealthTick;
+                        utc = _fullHealthUtc;
+                        return;
+                    }
+                    break;
+
+                case GrBossTimerStart.GuardianSpawn:
+                    // The bar filling IS the spawn, and it is known even when the actor
+                    // list never showed the guardian at all.
+                    if (_riftFullTick != 0)
+                    {
+                        tick = _riftFullTick;
+                        utc = _riftFullUtc;
+                        return;
+                    }
+                    break;
             }
-            else if (_fullHealthUtc != DateTime.MinValue)
+
+            if (_attackableUtc != DateTime.MinValue)
             {
-                tick = _fullHealthTick;
-                utc = _fullHealthUtc;
+                tick = _attackableTick;
+                utc = _attackableUtc;
             }
             else if (_riftFullTick != 0)
             {
@@ -712,6 +845,9 @@ namespace Turbo.Plugins.GuiSquare
             _engageUtc = DateTime.MinValue;
             _fullHealthTick = 0;
             _fullHealthUtc = DateTime.MinValue;
+            _attackableTick = 0;
+            _attackableUtc = DateTime.MinValue;
+            _attackableSeen = false;
             _lastSeenTick = 0;
             _lastSeenUtc = DateTime.MinValue;
             _maxHealth = 0d;
@@ -810,18 +946,34 @@ namespace Turbo.Plugins.GuiSquare
             if (HideUntilFirstBoss && KillCount == 0 && _currentMs < 0d && !_running)
                 return;
 
+            var line1 = CurrentLabel + BuildCurrentText();
+            var line2 = AverageLabel + BuildAverageText();
+            var line3 = ShowSessionLine ? SessionLabel + BuildSessionText() : null;
+
+            // The whole block in one string, exactly as the tracker text does it: the
+            // metrics of a multi-line layout report the widest line, which is what has
+            // to fit the minimap.
+            var block = line3 == null ? line1 + "\n" + line2 : line1 + "\n" + line2 + "\n" + line3;
+
+            var minimapWidth = GetMinimapWidth();
+            if (AutoFontSize && minimapWidth > 0f)
+                EnsureAutoFonts(minimapWidth, block);
+
+            var textFont = EffectiveTextFont();
+            var runningFont = EffectiveRunningFont();
+
+            var lineHeight = MeasureLineHeight(textFont) * (1f + LineSpacing);
+
             float x, y;
-            if (!GetOrigin(out x, out y))
+            if (!GetOrigin(lineHeight, out x, out y))
                 return;
 
-            var lineHeight = MeasureLineHeight() * (1f + LineSpacing);
+            var currentFont = _running && !_killed ? runningFont : textFont;
+            currentFont.DrawText(line1, x, y);
+            textFont.DrawText(line2, x, y + lineHeight);
 
-            var currentFont = _running && !_killed ? RunningFont : TextFont;
-            currentFont.DrawText(CurrentLabel + BuildCurrentText(), x, y);
-            TextFont.DrawText(AverageLabel + BuildAverageText(), x, y + lineHeight);
-
-            if (ShowSessionLine)
-                TextFont.DrawText(SessionLabel + BuildSessionText(), x, y + (lineHeight * 2f));
+            if (line3 != null)
+                textFont.DrawText(line3, x, y + (lineHeight * 2f));
         }
 
         private string BuildCurrentText()
@@ -913,7 +1065,7 @@ namespace Turbo.Plugins.GuiSquare
         // Layout
         // =====================================================================
 
-        private bool GetOrigin(out float x, out float y)
+        private bool GetOrigin(float lineHeight, out float x, out float y)
         {
             var w = (float)Hud.Window.Size.Width;
             var h = (float)Hud.Window.Size.Height;
@@ -929,7 +1081,7 @@ namespace Turbo.Plugins.GuiSquare
 
                 var rect = minimap.Rectangle;
                 x = rect.Left;
-                y = rect.Top + (PanelLineCount * MeasureLineHeight());
+                y = rect.Top + (PanelLineCount * lineHeight);
             }
 
             x += h * OffsetX;
@@ -938,19 +1090,107 @@ namespace Turbo.Plugins.GuiSquare
             return true;
         }
 
+        private float GetMinimapWidth()
+        {
+            var minimap = Hud.Render.MinimapUiElement;
+            if (minimap == null || !minimap.Visible)
+                return 0f;
+
+            return minimap.Rectangle.Width;
+        }
+
+        private IFont EffectiveTextFont()
+        {
+            return AutoFontSize && _autoTextFont != null ? _autoTextFont : TextFont;
+        }
+
+        private IFont EffectiveRunningFont()
+        {
+            return AutoFontSize && _autoRunningFont != null ? _autoRunningFont : RunningFont;
+        }
+
         /// <summary>
-        /// Height of one line of the tracker text drawn over the minimap, in pixels, at
-        /// the current window size. Font sizes scale with the window, so this shrinks and
-        /// grows on a resize -- except below the absolute floor of that text, which is
-        /// exactly why a fixed fraction of the minimap drifts and this does not.
+        /// Size the block the way the tracker text above it sizes itself, so the two
+        /// match at any window size.
+        ///
+        /// That text is NOT drawn at a fixed size. It grows until it fills the minimap
+        /// width, and stops early only once a line reaches MinLineHeight pixels AND the
+        /// size reaches MaxFontSize. Both halves of that cap matter. TurboHUD font sizes
+        /// scale with the window, so at a small resolution a size of MaxFontSize gives
+        /// lines well under MinLineHeight, the cap is not satisfied, and the text keeps
+        /// growing past MaxFontSize until it is. Drawing at a fixed MaxFontSize therefore
+        /// looks right at 1080p and visibly too small at 800x600 -- which is exactly what
+        /// this block used to do.
         /// </summary>
-        private float MeasureLineHeight()
+        private void EnsureAutoFonts(float minimapWidth, string block)
+        {
+            var widthChanged = Math.Abs(minimapWidth - _lastMinimapWidth) > 0.01f;
+
+            // The rendered text changes every frame while the clock ticks, so the search
+            // is keyed on its length rather than its content. A same-length line differs
+            // by a pixel or two at most, far below the 0.1 step of the search.
+            if (!widthChanged && block.Length == _lastBlockLength && _autoTextFont != null)
+                return;
+
+            _lastMinimapWidth = minimapWidth;
+            _lastBlockLength = block.Length;
+
+            // A resize re-derives from the bottom, as the tracker text does by resetting
+            // its own size. Growing from the previous size would leave the font too large
+            // on a shrink whenever the width is not what caps it. A mere text-length
+            // change can start where it left off.
+            var size = widthChanged || _fontSize <= 0f ? FontSizeFloor : _fontSize;
+
+            while (size < FontSizeCeiling)
+            {
+                var font = ProbeFont(size);
+                if (font.GetTextLayout(block).Metrics.Width >= minimapWidth)
+                    break;
+                if (font.GetTextLayout("X").Metrics.Height >= MinLineHeight && size >= MaxFontSize)
+                    break;
+
+                size += FontSizeStep;
+            }
+
+            while (size > FontSizeFloor)
+            {
+                if (ProbeFont(size).GetTextLayout(block).Metrics.Width <= minimapWidth)
+                    break;
+
+                size -= FontSizeStep;
+            }
+
+            if (Math.Abs(size - _fontSize) < 0.001f && _autoTextFont != null)
+                return;
+
+            _fontSize = size;
+            _autoTextFont = Hud.Render.CreateFont("Arial", size, 255, 255, 255, 255, true, false, false);
+            _autoRunningFont = Hud.Render.CreateFont("Arial", size, 255, 255, 225, 130, true, false, false);
+        }
+
+        private IFont ProbeFont(float size)
+        {
+            if (_probeFont == null || Math.Abs(size - _probeSize) > 0.001f)
+            {
+                _probeFont = Hud.Render.CreateFont("Arial", size, 255, 255, 255, 255, true, false, false);
+                _probeSize = size;
+            }
+
+            return _probeFont;
+        }
+
+        /// <summary>
+        /// Height of one line, in pixels, at the current window size. Measured from the
+        /// font actually being drawn with, so the placement below the tracker text stays
+        /// true once that font follows a resize.
+        /// </summary>
+        private float MeasureLineHeight(IFont font)
         {
             var h = MinLineHeight;
 
-            if (_lineProbeFont != null)
+            if (font != null)
             {
-                var layout = _lineProbeFont.GetTextLayout("X");
+                var layout = font.GetTextLayout("X");
                 if (layout != null && layout.Metrics.Height > h)
                     h = layout.Metrics.Height;
             }
@@ -976,6 +1216,7 @@ namespace Turbo.Plugins.GuiSquare
                 "-- Greater Rift boss timer --",
                 "state       : " + _dbgState,
                 "guardian    : " + _dbgGuardian,
+                "attackable  : " + _dbgAttackable,
                 "in rift     : " + _wasInGreaterRift
                                  + " (sticky) -- specialArea=" + Hud.Game.SpecialArea
                                  + " inGr=" + Hud.Game.Me.InGreaterRift
@@ -991,6 +1232,7 @@ namespace Turbo.Plugins.GuiSquare
                 "anchors     : riftFull=" + _riftFullTick.ToString(CultureInfo.InvariantCulture)
                                  + " spawn=" + _spawnTick.ToString(CultureInfo.InvariantCulture)
                                  + " fullHp=" + _fullHealthTick.ToString(CultureInfo.InvariantCulture)
+                                 + " attackable=" + _attackableTick.ToString(CultureInfo.InvariantCulture)
                                  + " engage=" + (_engageTick == int.MinValue ? "-" : _engageTick.ToString(CultureInfo.InvariantCulture))
                                  + " now=" + Hud.Game.CurrentGameTick.ToString(CultureInfo.InvariantCulture),
                 "current     : " + (_currentMs >= 0d ? FormatDuration(_currentMs) : "-"),
@@ -1004,6 +1246,11 @@ namespace Turbo.Plugins.GuiSquare
                                  + (KillCount > 0 ? FormatDuration(AverageMilliseconds) : "-")
                                  + ", best " + (KillCount > 0 ? FormatDuration(BestMilliseconds) : "-")
                                  + ", worst " + (KillCount > 0 ? FormatDuration(WorstMilliseconds) : "-"),
+                "font        : " + (AutoFontSize ? "auto " : "fixed ")
+                                 + _fontSize.ToString("0.0", CultureInfo.InvariantCulture)
+                                 + " (cap " + MaxFontSize.ToString("0.0", CultureInfo.InvariantCulture)
+                                 + ", floor " + MinLineHeight.ToString("0.0", CultureInfo.InvariantCulture)
+                                 + "px), minimap " + _lastMinimapWidth.ToString("0", CultureInfo.InvariantCulture) + "px",
                 "line height : " + _dbgLineHeight.ToString("0.0", CultureInfo.InvariantCulture)
                                  + " px, " + PanelLineCount.ToString(CultureInfo.InvariantCulture) + " lines down",
             };

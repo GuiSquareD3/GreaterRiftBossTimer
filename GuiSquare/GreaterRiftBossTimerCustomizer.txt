@@ -89,19 +89,27 @@ namespace Turbo.Plugins.GuiSquare
                 // ---------------------------------------------------------------
                 // 3) What exactly is being measured
                 // ---------------------------------------------------------------
-                // FirstDamage   -> the clock starts on the guardian's first point of
-                //                  damage, so the number is the kill itself     [default]
-                // GuardianSpawn -> the clock starts the moment the guardian appears, so
-                //                  the number also carries the walk over to it
-                // plugin.StartOn = GrBossTimerStart.FirstDamage;
+                // BecomesAttackable -> the clock starts when the guardian can first be
+                //                      hit, so its spawn animation -- untargetable,
+                //                      immune, and the same length every time -- is
+                //                      left out of the measurement            [default]
+                // FirstDamage       -> the clock starts on the guardian's first point of
+                //                      damage, which also leaves out the time spent
+                //                      closing in or setting up
+                // GuardianSpawn     -> the clock starts the moment the guardian spawns,
+                //                      spawn animation included
+                // plugin.StartOn = GrBossTimerStart.BecomesAttackable;
 
                 // true  -> game ticks (60 per second), what the rift timer itself counts,
                 //          and the one measure a changed game speed cannot skew [default]
                 // false -> real elapsed time on the wall clock
                 // plugin.UseGameTime = true;
 
-                // Fraction of max health the guardian has to drop below before the fight
-                // counts as started.
+                // Fraction of max health the guardian has to drop below to count as
+                // damaged. Used by StartOn = FirstDamage, and as the backstop of
+                // BecomesAttackable: a guardian taking damage is attackable whatever its
+                // flags claim, which keeps one whose flags never clear from reporting a
+                // fight of no duration.
                 // plugin.FirstDamageThreshold = 0.999d;
 
                 // Kills shorter than this are still shown, but left out of the average.
@@ -122,8 +130,21 @@ namespace Turbo.Plugins.GuiSquare
                 // ---------------------------------------------------------------
                 // 4) Look
                 // ---------------------------------------------------------------
-                // Both fonts match the tracker text above them: Arial 8.0 bold, no shadow.
-                // The running one is tinted while the fight is still on.
+                // The font size is re-derived from the window, the same way the tracker
+                // text above derives its own, so the two match at any resolution. That
+                // text is not drawn at a fixed size: it grows until it fills the minimap
+                // width, stopping early only once a line is at least MinLineHeight tall
+                // AND the size has reached MaxFontSize. TurboHUD sizes scale with the
+                // window, so at 800x600 MaxFontSize gives lines well under the floor,
+                // the cap is not met, and both keep growing past it together.
+                // plugin.AutoFontSize = true;
+                // plugin.MaxFontSize = 8.0f;     // the tracker text's own cap
+                // plugin.MinLineHeight = 13.5f;  // and its own absolute floor, in pixels
+
+                // Turning the auto-sizing off hands the fonts back to you, drawn exactly
+                // as built here. Arial bold, no shadow, the running one tinted while the
+                // fight is still on.
+                // plugin.AutoFontSize = false;
                 // plugin.TextFont    = Hud.Render.CreateFont("Arial", 8.0f, 255, 255, 255, 255, true, false, false);
                 // plugin.RunningFont = Hud.Render.CreateFont("Arial", 8.0f, 255, 255, 225, 130, true, false, false);
 
