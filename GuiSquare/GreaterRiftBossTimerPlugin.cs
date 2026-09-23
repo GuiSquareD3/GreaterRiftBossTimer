@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.IO;
+using System.Text;
 using Turbo.Plugins.Default;
 
 namespace Turbo.Plugins.GuiSquare
@@ -158,6 +160,37 @@ namespace Turbo.Plugins.GuiSquare
         public double FirstDamageThreshold { get; set; }
 
         /// <summary>
+        /// How long a guardian stays unhittable after the progress bar fills, in game
+        /// ticks. Not a guess: measured over 220 kills across 25 distinct guardians, and
+        /// the gap between the bar filling and the flags clearing landed in 222..227
+        /// ticks 215 of those times. It is a fixed game rule, not a per-guardian
+        /// animation length.
+        ///
+        /// The flags remain the primary signal, because they self-adjust if the game
+        /// ever changes this. This value only polices them: see the tolerance below.
+        /// </summary>
+        public int SpawnProtectionTicks { get; set; }
+
+        /// <summary>
+        /// How far the observed transition may sit from SpawnProtectionTicks before it
+        /// is treated as no observation at all and replaced.
+        ///
+        /// Five of 220 kills fell outside, all for the same reason -- the transition was
+        /// never visible -- and in both directions:
+        ///
+        ///   * the actor was first seen on the very tick it was created, before its
+        ///     Untargetable flag was populated, so the gate opened immediately and the
+        ///     clock ran 3.75s long;
+        ///   * the actor was first seen after the protection had already lapsed, so the
+        ///     clock started short by anything from 0.5s to 2.2s.
+        ///
+        /// 15 sits in a gap the data leaves wide open: over 220 kills the sound readings
+        /// never strayed more than 3 ticks from SpawnProtectionTicks, and the nearest
+        /// bad one was 31 out. Five times the observed jitter, half the closest fault.
+        /// </summary>
+        public int SpawnProtectionToleranceTicks { get; set; }
+
+        /// <summary>
         /// Kills shorter than this many milliseconds are shown but left out of the
         /// average. 0 keeps every sample, which is the honest default: a one-shot
         /// guardian in a low rift really does die in no time.
@@ -184,6 +217,19 @@ namespace Turbo.Plugins.GuiSquare
 
         /// <summary>Font used for the current line while the fight is still running.</summary>
         public IFont RunningFont { get; set; }
+
+        /// <summary>
+        /// Append one line per rift to a log file. Independent of the on-screen panel, so
+        /// a long run can be recorded without the clutter, and read back afterwards --
+        /// the on-screen history only keeps the last few.
+        /// </summary>
+        public bool LogToFile { get; set; }
+
+        /// <summary>
+        /// Log location, relative to the TurboHUD folder. Kept OUT of plugins/ on
+        /// purpose: writing there trips the file watcher and forces a recompile.
+        /// </summary>
+        public string LogFileName { get; set; }
 
         /// <summary>Show the diagnostic panel. Turn it on once to validate in game.</summary>
         public bool DebugEnabled { get; set; }
@@ -223,6 +269,13 @@ namespace Turbo.Plugins.GuiSquare
         // Internals
         // ---------------------------------------------------------------------
 
+        /// <summary>
+        /// Stamped into the log header, so a log can be tied to the code that wrote it.
+        /// Bump it whenever the detection changes: a run was already misread once as a
+        /// test of a build that was not actually loaded.
+        /// </summary>
+        private const string BuildTag = "2026-09-23-leave-confirm";
+
         private const double GameTicksPerSecond = 60.0d;
 
         // Guardian being tracked in the current rift.
@@ -261,6 +314,9 @@ namespace Turbo.Plugins.GuiSquare
         /// <summary>Collections of a running rift needed to call it a new one, after a full one.</summary>
         private const int NewRiftConfirmCollections = 3;
 
+        /// <summary>Collections of "not in game" or "in town" needed before the rift is torn down.</summary>
+        private const int LeaveConfirmCollections = 5;
+
         // Outcome of the last few rifts, newest last. Diagnostic only: this is what turns
         // "one rift counted nothing" from a guess into a reading.
         private const int HistoryLength = 8;
@@ -283,6 +339,16 @@ namespace Turbo.Plugins.GuiSquare
         private string _dbgState = "-";
         private string _dbgGuardian = "-";
         private string _dbgAttackable = "-";
+        private string _attackableGate = "-";   // what opened the gate, latched at the transition
+        private string _spawnAttrsAtFirstSight = "-";
+        private int _gateOpenedTick;
+        private bool _logHeaderWritten;
+        private bool _anchorCorrected;
+        private int _leavingConfirm;
+        private string _closeReason;
+
+        /// <summary>How long after the gate opens a returning blocker still counts as a flicker.</summary>
+        private const int BlockerEchoWindowTicks = 120;   // 2 seconds of game time
 
         public GreaterRiftBossTimerPlugin()
         {
@@ -314,13 +380,21 @@ namespace Turbo.Plugins.GuiSquare
             StartOn = GrBossTimerStart.BecomesAttackable;
             UseGameTime = true;
             FirstDamageThreshold = 0.999d;
+            SpawnProtectionTicks = 225;
+            SpawnProtectionToleranceTicks = 15;
             MinimumValidMilliseconds = 0d;
             VanishGraceMs = 900;
             ResetStatsOnNewGame = false;
 
-            // Off. Turn it on to read the panel: it logs one line per rift, so a rift
-            // that counts nothing says which check gave up. That trace is what found
-            // the SpecialArea flip, after two wrong guesses at the cause.
+            // The log carries one line per rift, including the gate that released the
+            // clock. That is the reading that tells a spawn phase this plugin recognises
+            // from one it does not, and it survives a restart -- unlike the on-screen
+            // history, which keeps only the last few.
+            LogToFile = true;
+            LogFileName = "GuiSquare/gr_boss_timer_log.txt";
+
+            // Off: the log says the same thing without the clutter. Turn it on only to
+            // watch the flags move live during a spawn.
             DebugEnabled = false;
             DebugX = 0.35f;
             DebugY = 0.20f;
@@ -360,16 +434,49 @@ namespace Turbo.Plugins.GuiSquare
             if (!Enabled)
                 return;
 
-            if (!Hud.Game.IsInGame)
+            // Leaving the rift is confirmed over several collections, never on one.
+            //
+            // A single collection reading "not in game" or "in town" mid-fight -- a lag
+            // spike, a frame where the game state is between two things -- used to tear
+            // the rift down on the spot. That cost two entries in the log instead of one:
+            // a phantom NO SAMPLE for the rift being abandoned, then the real kill logged
+            // as a fresh rift with no anchor at all, so the cross-check had nothing to
+            // police it with. Seen five times in a single session.
+            //
+            // A genuine exit holds for far longer than a few collections, so nothing real
+            // is missed by waiting.
+            var leaving = !Hud.Game.IsInGame ? "not in game"
+                : Hud.Game.IsInTown ? "in town"
+                : null;
+
+            if (leaving != null)
             {
+                _dbgState = leaving + " (" + _leavingConfirm.ToString(CultureInfo.InvariantCulture)
+                    + "/" + LeaveConfirmCollections.ToString(CultureInfo.InvariantCulture) + ")";
+
+                if (++_leavingConfirm < LeaveConfirmCollections)
+                    return; // not convinced yet: leave the rift state alone
+
+                if (_wasInGreaterRift)
+                    _closeReason = leaving;
+
                 _wasInGreaterRift = false;
-                ResetRift();
-                _dbgState = "not in game";
+                _guardianAcd = 0u;
+                _vanishedUtc = DateTime.MinValue;
+                _running = false;
+
+                // Only a real exit from the game clears the rift outright. Town keeps the
+                // last result on screen until the next rift starts.
+                if (!Hud.Game.IsInGame)
+                    ResetRift();
+
                 return;
             }
 
-            // Being inside a rift is STICKY: entered on a positive signal, left only on
-            // town, a new game, or leaving the game.
+            _leavingConfirm = 0;
+
+            // Being inside a rift is STICKY: entered on a positive signal, left only on a
+            // confirmed town, new game, or exit.
             //
             // It cannot be re-tested every collection against Hud.Game.SpecialArea, which
             // is what the first versions did and what cost whole rifts. SpecialArea drops
@@ -380,18 +487,6 @@ namespace Turbo.Plugins.GuiSquare
             // and the flip decided whether the rift counted at all. That is exactly the
             // one-rift-in-four miss, and every check downstream was powerless, because
             // the early return fired before any of them.
-            if (Hud.Game.IsInTown)
-            {
-                // Back in town, so the rift really is over. The last result stays on
-                // screen until the next one starts.
-                _wasInGreaterRift = false;
-                _guardianAcd = 0u;
-                _vanishedUtc = DateTime.MinValue;
-                _running = false;
-                _dbgState = "in town";
-                return;
-            }
-
             var now = Hud.Time.Now;
             var tick = Hud.Game.CurrentGameTick;
             var rewardStep = IsRiftRewardStep();
@@ -499,6 +594,7 @@ namespace Turbo.Plugins.GuiSquare
                 _attackableTick = tick;
                 _attackableUtc = now;
                 _attackableSeen = false;
+                _spawnAttrsAtFirstSight = SpawnPhaseAttributes(guardian);
                 _maxHealth = 0d;
                 _seenAlive = false;
                 _currentMs = -1d;
@@ -520,18 +616,54 @@ namespace Turbo.Plugins.GuiSquare
             // missed, a sliding value cannot.
             if (!_attackableSeen)
             {
-                if (IsAttackable(guardian) || damaged)
+                var blocker = AttackabilityBlocker(guardian);
+
+                if (blocker == null || damaged)
                 {
                     // Damage only lands on something that can be hit, so it settles the
                     // question whatever the flags say. That backstop matters: without
                     // it, a guardian whose flags never clear would slide its own anchor
                     // all the way to its death and report a fight of no duration.
                     _attackableSeen = true;
+                    _gateOpenedTick = tick;
+
+                    // What opened the gate, recorded here because it cannot be read back
+                    // afterwards. "flags@0t" means the guardian never looked unhittable
+                    // at all -- which is the fingerprint of a spawn phase this test does
+                    // not recognise, and the clock starting too early.
+                    _attackableGate = (blocker == null ? "flags" : "damage")
+                        + "@" + (tick - _spawnTick).ToString(CultureInfo.InvariantCulture) + "t"
+                        + " state=" + guardian.AnimationState
+                        + " anim=" + guardian.Animation
+                        + " attrs=" + _spawnAttrsAtFirstSight + "->" + SpawnPhaseAttributes(guardian);
                 }
                 else
                 {
                     _attackableTick = tick;
                     _attackableUtc = now;
+                    _attackableGate = "waiting on " + blocker;
+                }
+            }
+            else if (_gateOpenedTick != 0 && tick - _gateOpenedTick <= BlockerEchoWindowTicks)
+            {
+                // Did a blocker come back right after the gate opened? Pure observation,
+                // it changes nothing.
+                //
+                // It separates the two ways this can go wrong, which need opposite
+                // fixes. A flag that never fires means the spawn phase is invisible to
+                // us, and the answer is a better signal. A flag that flickers -- clear
+                // for one collection in the middle of the entrance -- means the signal
+                // is fine and the reading is not, and the answer is to require it to
+                // hold for a few collections before believing it, exactly as the new
+                // rift check already does.
+                //
+                // An intermittent symptom on the same guardian points at the second.
+                var echo = AttackabilityBlocker(guardian);
+                if (echo != null)
+                {
+                    _attackableGate += " !ECHO " + echo
+                        + "@+" + (tick - _gateOpenedTick).ToString(CultureInfo.InvariantCulture) + "t";
+                    _gateOpenedTick = 0; // recorded once is enough
                 }
             }
 
@@ -589,11 +721,10 @@ namespace Turbo.Plugins.GuiSquare
                 + " anim=" + guardian.AnimationState;
 
             _dbgAttackable = "seen=" + _attackableSeen
-                + " now=" + IsAttackable(guardian)
-                + " -- untargetable=" + guardian.Untargetable
-                + " invulnerable=" + guardian.Invulnerable
-                + " damaged=" + damaged
-                + " (Attackable=" + guardian.Attackable + ")";
+                + " gate=" + _attackableGate
+                + " -- now blocked by " + (AttackabilityBlocker(guardian) ?? "nothing")
+                + ", damaged=" + damaged
+                + ", attrs now " + SpawnPhaseAttributes(guardian);
         }
 
         private void TrackMissingGuardian(DateTime now, bool rewardStep)
@@ -706,7 +837,7 @@ namespace Turbo.Plugins.GuiSquare
 
             int startTick;
             DateTime startUtc;
-            if (!TryGetStartPoint(out startTick, out startUtc))
+            if (!TryGetStartPoint(endTick, endUtc, out startTick, out startUtc))
             {
                 _killPath = path + ", no anchor";
                 return;
@@ -732,23 +863,82 @@ namespace Turbo.Plugins.GuiSquare
 
         /// <summary>
         /// Can the guardian be hit right now? A rift guardian spends its first moment on
-        /// screen playing a spawn animation, untargetable and immune, and the clock has
-        /// no business running during it.
+        /// screen playing a spawn animation it cannot be interrupted during, and the
+        /// clock has no business running then.
         ///
-        /// Three independent flags rather than IMonster.Attackable, which also folds in
-        /// IsOnScreen and would therefore answer "no" every time the camera loses the
-        /// guardian mid-fight.
+        /// Every flag the API offers that means "not hittable yet" is tested, not just
+        /// the obvious two: a guardian seen starting its clock early was doing so because
+        /// its own spawn phase raised none of the ones we happened to check. Which flag
+        /// each guardian raises is not documented anywhere, so the safe reading is the
+        /// union. Only the very first transition matters -- once the fight has started
+        /// the answer is latched -- so a monster that later stealths or burrows mid-fight
+        /// cannot restart anything.
+        ///
+        /// Deliberately NOT IMonster.Attackable, which folds in IsOnScreen and would
+        /// therefore answer "no" every time the camera loses the guardian mid-fight.
         /// </summary>
         private bool IsAttackable(IMonster guardian)
         {
-            if (guardian.Untargetable)
-                return false;
-            if (guardian.Invulnerable)
-                return false;
-            if (guardian.AnimationState == AcdAnimationState.Spawn)
-                return false;
+            return AttackabilityBlocker(guardian) == null;
+        }
 
-            return true;
+        /// <summary>
+        /// The flag currently keeping the guardian unhittable, or null if none is. Same
+        /// test as IsAttackable, but it names the reason, which is what the diagnostic
+        /// panel needs: by the time anyone looks at the screen, the transition is long
+        /// past and the live flags say nothing about what happened.
+        /// </summary>
+        private string AttackabilityBlocker(IMonster guardian)
+        {
+            if (guardian.Untargetable) return "untargetable";
+            if (guardian.Invulnerable) return "invulnerable";
+            if (guardian.Hidden) return "hidden";
+            if (guardian.Invisible) return "invisible";
+            if (guardian.Stealthed) return "stealthed";
+            if (guardian.Burrowed) return "burrowed";
+            if (guardian.AnimationState == AcdAnimationState.Spawn) return "anim=Spawn";
+
+            return null;
+        }
+
+        /// <summary>
+        /// Raw game attributes that might mark a spawn phase, listed only when actually
+        /// set. Diagnostic for now, NOT part of the gate: which of these a rift guardian
+        /// raises during its entrance has never been observed, and guessing is what cost
+        /// this plugin two wasted iterations already.
+        ///
+        /// They are worth watching because IMonster's own flags are derived views, and
+        /// the raw list carries things they do not -- AI_Used_Scripted_Spawn_Anim says
+        /// outright that the actor is playing a scripted entrance, and Gethit_Immune
+        /// says damage will not register, which is the real question.
+        ///
+        /// Whichever ones turn out to fire reliably belong in AttackabilityBlocker.
+        /// </summary>
+        private string SpawnPhaseAttributes(IMonster guardian)
+        {
+            var set = new List<string>();
+
+            AddIfSet(set, guardian, Hud.Sno.Attributes.AI_Used_Scripted_Spawn_Anim, "scriptedSpawnAnim");
+            AddIfSet(set, guardian, Hud.Sno.Attributes.Gethit_Immune, "gethitImmune");
+            AddIfSet(set, guardian, Hud.Sno.Attributes.Immunity, "immunity");
+            AddIfSet(set, guardian, Hud.Sno.Attributes.Uninterruptible, "uninterruptible");
+            AddIfSet(set, guardian, Hud.Sno.Attributes.Untargetable, "attr:untargetable");
+            AddIfSet(set, guardian, Hud.Sno.Attributes.Invulnerable, "attr:invulnerable");
+            AddIfSet(set, guardian, Hud.Sno.Attributes.Hidden, "attr:hidden");
+            AddIfSet(set, guardian, Hud.Sno.Attributes.Disabled, "attr:disabled");
+
+            return set.Count == 0 ? "none" : string.Join(",", set.ToArray());
+        }
+
+        private static void AddIfSet(List<string> into, IMonster guardian, IAttribute attribute, string label)
+        {
+            if (attribute == null)
+                return;
+
+            // -1 is the "not present on this actor" default, 0 is present but off.
+            var value = guardian.GetAttributeValue(attribute, 0, -1d);
+            if (value != 0d && value != -1d)
+                into.Add(label);
         }
 
         /// <summary>Has the clock started, under the currently selected StartOn?</summary>
@@ -777,7 +967,7 @@ namespace Turbo.Plugins.GuiSquare
         /// observed and there is nothing to measure. Returning a bogus zero instead
         /// would quietly poison the average with a kill of no duration.
         /// </summary>
-        private bool TryGetStartPoint(out int tick, out DateTime utc)
+        private bool TryGetStartPoint(int nowTick, DateTime nowUtc, out int tick, out DateTime utc)
         {
             switch (StartOn)
             {
@@ -812,6 +1002,20 @@ namespace Turbo.Plugins.GuiSquare
             {
                 tick = _attackableTick;
                 utc = _attackableUtc;
+
+                // Cross-check against the rift anchor, and override the observation when
+                // it is plainly not one. See SpawnProtectionTicks for why this is sound.
+                if (_riftFullTick != 0)
+                {
+                    var expected = _riftFullTick + SpawnProtectionTicks;
+                    if (Math.Abs(tick - expected) > SpawnProtectionToleranceTicks)
+                    {
+                        utc = InterpolateUtc(expected, nowTick, nowUtc);
+                        tick = expected;
+                        _anchorCorrected = true;
+                    }
+                }
+
                 return true;
             }
 
@@ -825,6 +1029,21 @@ namespace Turbo.Plugins.GuiSquare
             tick = 0;
             utc = DateTime.MinValue;
             return false;
+        }
+
+        /// <summary>
+        /// A wall-clock stamp for a tick we never observed, interpolated at the rate this
+        /// rift is actually running at. A game speed hack breaks any fixed tick-to-second
+        /// conversion, so the rate has to come from the rift itself.
+        /// </summary>
+        private DateTime InterpolateUtc(int targetTick, int nowTick, DateTime nowUtc)
+        {
+            var span = nowTick - _riftFullTick;
+            if (span <= 0 || _riftFullUtc == DateTime.MinValue)
+                return nowUtc;
+
+            var fraction = (targetTick - _riftFullTick) / (double)span;
+            return _riftFullUtc.AddTicks((long)((nowUtc - _riftFullUtc).Ticks * fraction));
         }
 
         private static double TicksToMilliseconds(int fromTick, int toTick)
@@ -844,6 +1063,10 @@ namespace Turbo.Plugins.GuiSquare
             _attackableTick = 0;
             _attackableUtc = DateTime.MinValue;
             _attackableSeen = false;
+            _attackableGate = "-";
+            _spawnAttrsAtFirstSight = "-";
+            _gateOpenedTick = 0;
+            _anchorCorrected = false;
             _lastSeenTick = 0;
             _lastSeenUtc = DateTime.MinValue;
             _maxHealth = 0d;
@@ -869,6 +1092,7 @@ namespace Turbo.Plugins.GuiSquare
             _riftWasFull = false;
             _inProgressAfterFull = 0;
             _killPath = null;
+            _closeReason = null;
         }
 
         /// <summary>
@@ -887,7 +1111,9 @@ namespace Turbo.Plugins.GuiSquare
 
             if (_killed && _currentMs >= 0d)
             {
-                entry += "ok " + FormatDuration(_currentMs) + " via " + (_killPath ?? "?");
+                entry += "ok " + FormatDuration(_currentMs) + " via " + (_killPath ?? "?")
+                    + " [gate " + _attackableGate + "]"
+                    + (_anchorCorrected ? " [ANCHOR CORRECTED to riftFull+" + SpawnProtectionTicks.ToString(CultureInfo.InvariantCulture) + "t]" : "");
             }
             else if (!_riftWasFull)
             {
@@ -898,6 +1124,7 @@ namespace Turbo.Plugins.GuiSquare
             else
             {
                 entry += "NO SAMPLE"
+                    + " closedBy=" + (_closeReason ?? "new rift")
                     + " anchor=" + (_riftFullTick != 0 ? "yes" : "no")
                     + " acd=" + _guardianAcd.ToString(CultureInfo.InvariantCulture)
                     + " alive=" + _seenAlive
@@ -907,6 +1134,70 @@ namespace Turbo.Plugins.GuiSquare
             _history.Add(entry);
             while (_history.Count > HistoryLength)
                 _history.RemoveAt(0);
+
+            AppendToLog(entry);
+        }
+
+        // =====================================================================
+        // Log file
+        // =====================================================================
+
+        /// <summary>
+        /// Where the log lands. Relative to the TurboHUD folder, and deliberately NOT
+        /// under plugins/: writing there would trip the file watcher and make the HUD
+        /// recompile every rift.
+        /// </summary>
+        private string LogPath()
+        {
+            var root = AppDomain.CurrentDomain.BaseDirectory;
+            if (string.IsNullOrEmpty(root)) root = Environment.CurrentDirectory;
+            return Path.Combine(root, LogFileName.Replace('/', Path.DirectorySeparatorChar));
+        }
+
+        /// <summary>
+        /// One line per rift, appended. The on-screen history only keeps the last few,
+        /// which is no use over a long run: this is what can be read back afterwards.
+        /// Failures are swallowed on purpose -- a plugin that stops timing rifts because
+        /// a disk write failed would be worse than one that quietly loses its log.
+        /// </summary>
+        private void AppendToLog(string entry)
+        {
+            if (!LogToFile)
+                return;
+
+            try
+            {
+                var path = LogPath();
+                var folder = Path.GetDirectoryName(path);
+                if (!string.IsNullOrEmpty(folder) && !Directory.Exists(folder))
+                    Directory.CreateDirectory(folder);
+
+                var text = new StringBuilder();
+
+                if (!_logHeaderWritten)
+                {
+                    _logHeaderWritten = true;
+                    text.AppendLine();
+                    text.AppendLine("=== session started " + Hud.Time.Now.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture)
+                        + "  build=" + BuildTag
+                        + " startOn=" + StartOn
+                        + " clock=" + (UseGameTime ? "gameticks" : "wallclock") + " ===");
+                }
+
+                text.AppendLine(Hud.Time.Now.ToString("HH:mm:ss", CultureInfo.InvariantCulture)
+                    + "  " + entry
+                    + "  guardian=" + (_guardianName ?? "-")
+                    + "  anchors riftFull=" + _riftFullTick.ToString(CultureInfo.InvariantCulture)
+                    + " spawn=" + _spawnTick.ToString(CultureInfo.InvariantCulture)
+                    + " attackable=" + _attackableTick.ToString(CultureInfo.InvariantCulture)
+                    + " engage=" + (_engageTick == int.MinValue ? "-" : _engageTick.ToString(CultureInfo.InvariantCulture)));
+
+                File.AppendAllText(path, text.ToString(), Encoding.ASCII);
+            }
+            catch
+            {
+                // Never let logging break the timing.
+            }
         }
 
         /// <summary>Wipe the session statistics. Safe to call from a customizer or a hotkey.</summary>
@@ -979,7 +1270,7 @@ namespace Turbo.Plugins.GuiSquare
             int startTick;
             DateTime startUtc;
 
-            if (_running && !_killed && TryGetStartPoint(out startTick, out startUtc))
+            if (_running && !_killed && TryGetStartPoint(Hud.Game.CurrentGameTick, Hud.Time.Now, out startTick, out startUtc))
             {
                 ms = UseGameTime
                     ? TicksToMilliseconds(startTick, Hud.Game.CurrentGameTick)

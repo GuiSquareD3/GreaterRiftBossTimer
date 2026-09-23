@@ -70,11 +70,6 @@ namespace Turbo.Plugins.GuiSquare
                 // it, since the line above already carries both.
                 // plugin.ShowSessionLine = true;
 
-                // The alternative to the third line: the same two numbers crammed onto
-                // the average line, as " (best 8.4s / worst 41.2s)". Off by default, and
-                // pointless to turn on while ShowSessionLine is on.
-                // plugin.ShowBestAndWorst = false;
-
                 // Put the guardian's name on the current line.
                 // plugin.ShowGuardianName = false;
 
@@ -109,6 +104,23 @@ namespace Turbo.Plugins.GuiSquare
                 // flags claim, which keeps one whose flags never clear from reporting a
                 // fight of no duration.
                 // plugin.FirstDamageThreshold = 0.999d;
+
+                // How long a guardian stays unhittable after the progress bar fills.
+                // Measured, not guessed: over 220 kills across 25 distinct guardians the
+                // gap landed in 222..227 ticks 215 times, so it is a fixed game rule
+                // rather than a per-guardian animation length.
+                //
+                // The flags stay the primary signal -- they self-adjust if the game ever
+                // changes this. The value only polices them: when the observed transition
+                // sits further than the tolerance from it, the observation is treated as
+                // no observation at all and replaced.
+                //
+                // The tolerance sits in a gap the data leaves wide open. Over 220 kills
+                // the sound readings never strayed more than 3 ticks, and the nearest bad
+                // one was 31 out -- so 15 is five times the jitter and half the closest
+                // fault. It catches all 5 bad readings and leaves the other 215 alone.
+                // plugin.SpawnProtectionTicks = 225;
+                // plugin.SpawnProtectionToleranceTicks = 15;
 
                 // Kills shorter than this are still shown, but left out of the average.
                 // 0 keeps every sample: a one-shot guardian in a low rift really does die
@@ -149,6 +161,16 @@ namespace Turbo.Plugins.GuiSquare
                 // ---------------------------------------------------------------
                 // 5) Diagnostics
                 // ---------------------------------------------------------------
+                // One line per rift appended to a log file. Independent of the on-screen
+                // panel: over a long run the panel only keeps the last few rifts, the
+                // log keeps them all and can be read back afterwards.
+                //
+                // The path is relative to the TurboHUD folder and deliberately NOT under
+                // plugins/ -- writing there trips the file watcher and forces a recompile
+                // on every rift.
+                // plugin.LogToFile = true;
+                // plugin.LogFileName = "GuiSquare/gr_boss_timer_log.txt";
+
                 // Names the exact state the tracker is in, the guardian it locked onto,
                 // the numbers behind every line, and one entry per rift that has ended.
                 // plugin.DebugEnabled = true;

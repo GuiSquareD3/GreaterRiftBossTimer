@@ -52,8 +52,10 @@ editing the plugin itself.
 | `FirstDamageThreshold` | `0.999` | Health fraction that counts as damaged |
 | `MinimumValidMilliseconds` | `0` | Kills below this are shown but left out of the average |
 | `VanishGraceMs` | `900` | Wait before ruling on a guardian that left the actor list |
+| `SpawnProtectionTicks` / `SpawnProtectionToleranceTicks` | `225` / `15` | Expected spawn protection after the bar fills; a start point further off than the tolerance is replaced |
 | `ResetStatsOnNewGame` | `false` | Session total, or per game |
 | `DebugEnabled` | `false` | On-screen diagnostic panel, one line per rift (see below) |
+| `LogToFile` / `LogFileName` | `true` / `GuiSquare/gr_boss_timer_log.txt` | Same one line per rift, appended to a file relative to the TurboHUD folder |
 
 Set `AutoFontSize = false` to hand the fonts back to yourself: `TextFont`, and `RunningFont` for
 the current line while the fight is still on.
