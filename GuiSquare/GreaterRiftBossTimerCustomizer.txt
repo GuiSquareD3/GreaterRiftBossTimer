@@ -163,12 +163,13 @@ namespace Turbo.Plugins.GuiSquare
                 // ---------------------------------------------------------------
                 // One line per rift appended to a log file. Independent of the on-screen
                 // panel: over a long run the panel only keeps the last few rifts, the
-                // log keeps them all and can be read back afterwards.
+                // log keeps them all and can be read back afterwards. Off by default: turn
+                // it on to record a run worth investigating.
                 //
                 // The path is relative to the TurboHUD folder and deliberately NOT under
                 // plugins/ -- writing there trips the file watcher and forces a recompile
                 // on every rift.
-                // plugin.LogToFile = true;
+                // plugin.LogToFile = false;
                 // plugin.LogFileName = "GuiSquare/gr_boss_timer_log.txt";
 
                 // Names the exact state the tracker is in, the guardian it locked onto,

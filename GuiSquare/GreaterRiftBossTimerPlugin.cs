@@ -274,7 +274,7 @@ namespace Turbo.Plugins.GuiSquare
         /// Bump it whenever the detection changes: a run was already misread once as a
         /// test of a build that was not actually loaded.
         /// </summary>
-        private const string BuildTag = "2026-09-23-leave-confirm";
+        private const string BuildTag = "2026-09-23-log-off";
 
         private const double GameTicksPerSecond = 60.0d;
 
@@ -340,7 +340,6 @@ namespace Turbo.Plugins.GuiSquare
         private string _dbgGuardian = "-";
         private string _dbgAttackable = "-";
         private string _attackableGate = "-";   // what opened the gate, latched at the transition
-        private string _spawnAttrsAtFirstSight = "-";
         private int _gateOpenedTick;
         private bool _logHeaderWritten;
         private bool _anchorCorrected;
@@ -390,7 +389,7 @@ namespace Turbo.Plugins.GuiSquare
             // clock. That is the reading that tells a spawn phase this plugin recognises
             // from one it does not, and it survives a restart -- unlike the on-screen
             // history, which keeps only the last few.
-            LogToFile = true;
+            LogToFile = false;
             LogFileName = "GuiSquare/gr_boss_timer_log.txt";
 
             // Off: the log says the same thing without the clutter. Turn it on only to
@@ -594,7 +593,6 @@ namespace Turbo.Plugins.GuiSquare
                 _attackableTick = tick;
                 _attackableUtc = now;
                 _attackableSeen = false;
-                _spawnAttrsAtFirstSight = SpawnPhaseAttributes(guardian);
                 _maxHealth = 0d;
                 _seenAlive = false;
                 _currentMs = -1d;
@@ -634,8 +632,7 @@ namespace Turbo.Plugins.GuiSquare
                     _attackableGate = (blocker == null ? "flags" : "damage")
                         + "@" + (tick - _spawnTick).ToString(CultureInfo.InvariantCulture) + "t"
                         + " state=" + guardian.AnimationState
-                        + " anim=" + guardian.Animation
-                        + " attrs=" + _spawnAttrsAtFirstSight + "->" + SpawnPhaseAttributes(guardian);
+                        + " anim=" + guardian.Animation;
                 }
                 else
                 {
@@ -723,8 +720,7 @@ namespace Turbo.Plugins.GuiSquare
             _dbgAttackable = "seen=" + _attackableSeen
                 + " gate=" + _attackableGate
                 + " -- now blocked by " + (AttackabilityBlocker(guardian) ?? "nothing")
-                + ", damaged=" + damaged
-                + ", attrs now " + SpawnPhaseAttributes(guardian);
+                + ", damaged=" + damaged;
         }
 
         private void TrackMissingGuardian(DateTime now, bool rewardStep)
@@ -901,46 +897,6 @@ namespace Turbo.Plugins.GuiSquare
             return null;
         }
 
-        /// <summary>
-        /// Raw game attributes that might mark a spawn phase, listed only when actually
-        /// set. Diagnostic for now, NOT part of the gate: which of these a rift guardian
-        /// raises during its entrance has never been observed, and guessing is what cost
-        /// this plugin two wasted iterations already.
-        ///
-        /// They are worth watching because IMonster's own flags are derived views, and
-        /// the raw list carries things they do not -- AI_Used_Scripted_Spawn_Anim says
-        /// outright that the actor is playing a scripted entrance, and Gethit_Immune
-        /// says damage will not register, which is the real question.
-        ///
-        /// Whichever ones turn out to fire reliably belong in AttackabilityBlocker.
-        /// </summary>
-        private string SpawnPhaseAttributes(IMonster guardian)
-        {
-            var set = new List<string>();
-
-            AddIfSet(set, guardian, Hud.Sno.Attributes.AI_Used_Scripted_Spawn_Anim, "scriptedSpawnAnim");
-            AddIfSet(set, guardian, Hud.Sno.Attributes.Gethit_Immune, "gethitImmune");
-            AddIfSet(set, guardian, Hud.Sno.Attributes.Immunity, "immunity");
-            AddIfSet(set, guardian, Hud.Sno.Attributes.Uninterruptible, "uninterruptible");
-            AddIfSet(set, guardian, Hud.Sno.Attributes.Untargetable, "attr:untargetable");
-            AddIfSet(set, guardian, Hud.Sno.Attributes.Invulnerable, "attr:invulnerable");
-            AddIfSet(set, guardian, Hud.Sno.Attributes.Hidden, "attr:hidden");
-            AddIfSet(set, guardian, Hud.Sno.Attributes.Disabled, "attr:disabled");
-
-            return set.Count == 0 ? "none" : string.Join(",", set.ToArray());
-        }
-
-        private static void AddIfSet(List<string> into, IMonster guardian, IAttribute attribute, string label)
-        {
-            if (attribute == null)
-                return;
-
-            // -1 is the "not present on this actor" default, 0 is present but off.
-            var value = guardian.GetAttributeValue(attribute, 0, -1d);
-            if (value != 0d && value != -1d)
-                into.Add(label);
-        }
-
         /// <summary>Has the clock started, under the currently selected StartOn?</summary>
         private bool HasStarted()
         {
@@ -1064,7 +1020,6 @@ namespace Turbo.Plugins.GuiSquare
             _attackableUtc = DateTime.MinValue;
             _attackableSeen = false;
             _attackableGate = "-";
-            _spawnAttrsAtFirstSight = "-";
             _gateOpenedTick = 0;
             _anchorCorrected = false;
             _lastSeenTick = 0;
